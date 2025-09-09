@@ -1,8 +1,8 @@
 <?php
 /**
- * SSFood4U Enhanced Working Version - With Real-time Delivery Validation
+ * SSFood4U Cleaned Delivery Validator
  * File: class-delivery-validator-enhanced.php
- * Version: Enhanced with validation triggers
+ * Version: Cleaned - All debug moved to central logger
  */
 
 if (!defined('ABSPATH')) {
@@ -11,8 +11,21 @@ if (!defined('ABSPATH')) {
 
 class SSFood4U_Working_Delivery_Validator {
     
+    private $debug_logger = null;
+    
     public function __construct() {
+        // Initialize debug logger if available
+        if (class_exists('SSFood4U_Debug_Logger')) {
+            $this->debug_logger = SSFood4U_Debug_Logger::get_instance();
+        }
+        
         $this->init_hooks();
+    }
+    
+    private function debug($message, $category = 'DELIVERY') {
+        if ($this->debug_logger) {
+            $this->debug_logger->log($message, $category);
+        }
     }
     
     private function init_hooks() {
@@ -21,176 +34,6 @@ class SSFood4U_Working_Delivery_Validator {
         add_action('wp_ajax_validate_delivery_address', array($this, 'ajax_validate_delivery'));
         add_action('wp_ajax_nopriv_validate_delivery_address', array($this, 'ajax_validate_delivery'));
         add_filter('woocommerce_checkout_fields', array($this, 'reorder_checkout_fields'));
-        
-        // Add debugging hooks for shipping calculations
-        add_action('woocommerce_shipping_init', array($this, 'init_shipping_debug'));
-        add_filter('woocommerce_package_rates', array($this, 'debug_shipping_rates'), 10, 2);
-        add_action('woocommerce_checkout_update_order_review', array($this, 'debug_shipping_calculation'));
-    }
-    
-    /**
-     * Initialize shipping debugging
-     */
-    public function init_shipping_debug() {
-        error_log('=== SHIPPING DEBUG INIT ===');
-        error_log('WooCommerce shipping system initialized');
-        error_log('========================');
-    }
-    
-    /**
-     * Debug shipping calculation process
-     */
-    public function debug_shipping_calculation($post_data) {
-        error_log('=== SHIPPING CALCULATION DEBUG ===');
-        
-        // Parse the post data to get address
-        parse_str($post_data, $data);
-        $address = isset($data['billing_address_1']) ? $data['billing_address_1'] : '';
-        
-        if ($address) {
-            error_log('Address being calculated: ' . $address);
-            
-            // Try to get coordinates using Google Maps API if available
-            $this->debug_google_coordinates($address);
-            
-            // Try to get shipping packages
-            $packages = WC()->shipping()->get_packages();
-            foreach ($packages as $i => $package) {
-                error_log('Package ' . $i . ' destination: ' . print_r($package['destination'], true));
-                
-                // Get available shipping methods
-                $shipping_methods = WC()->shipping()->calculate_shipping($packages);
-                foreach ($packages as $package_key => $package) {
-                    if (isset($package['rates'])) {
-                        foreach ($package['rates'] as $rate_id => $rate) {
-                            error_log('Shipping Rate ID: ' . $rate_id);
-                            error_log('Shipping Rate Label: ' . $rate->label);
-                            error_log('Shipping Rate Cost: RM' . $rate->cost);
-                            
-                            // Check for the problematic RM11.80
-                            if (abs(floatval($rate->cost) - 11.80) < 0.01) {
-                                error_log('*** DETECTED RM11.80 - POTENTIAL GOOGLE DEFAULT LOCATION ***');
-                                error_log('Rate details: ' . print_r($rate, true));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        error_log('=== END SHIPPING CALCULATION DEBUG ===');
-    }
-    
-    /**
-     * Debug Google coordinates lookup
-     */
-    private function debug_google_coordinates($address) {
-        error_log('=== GOOGLE COORDINATES DEBUG ===');
-        error_log('Looking up coordinates for: ' . $address);
-        
-        // Try to access Google Maps API key from common WordPress options
-        $api_keys = array(
-            get_option('google_maps_api_key'),
-            get_option('wc_distance_rate_google_api_key'),
-            get_option('woocommerce_distance_rate_google_api_key'),
-            get_option('distance_rate_google_api_key'),
-            defined('GOOGLE_MAPS_API_KEY') ? GOOGLE_MAPS_API_KEY : null
-        );
-        
-        $api_key = null;
-        foreach ($api_keys as $key) {
-            if (!empty($key)) {
-                $api_key = $key;
-                break;
-            }
-        }
-        
-        if ($api_key) {
-            error_log('Google API key found, attempting coordinate lookup...');
-            
-            $address_encoded = urlencode($address . ', Semporna, Sabah, Malaysia');
-            $url = "https://maps.googleapis.com/maps/api/geocode/json?address={$address_encoded}&key={$api_key}";
-            
-            $response = wp_remote_get($url);
-            
-            if (!is_wp_error($response)) {
-                $body = wp_remote_retrieve_body($response);
-                $data = json_decode($body, true);
-                
-                error_log('Google API Response Status: ' . $data['status']);
-                
-                if ($data['status'] == 'OK' && !empty($data['results'])) {
-                    $result = $data['results'][0];
-                    $lat = $result['geometry']['location']['lat'];
-                    $lng = $result['geometry']['location']['lng'];
-                    
-                    error_log('*** COORDINATES FOUND ***');
-                    error_log('Latitude: ' . $lat);
-                    error_log('Longitude: ' . $lng);
-                    error_log('Formatted Address: ' . $result['formatted_address']);
-                    error_log('Place ID: ' . (isset($result['place_id']) ? $result['place_id'] : 'N/A'));
-                    
-                    // Check if this looks like a default/generic location
-                    $location_types = isset($result['types']) ? $result['types'] : array();
-                    error_log('Location Types: ' . implode(', ', $location_types));
-                    
-                    // Flag suspicious coordinates (generic locations)
-                    if (in_array('political', $location_types) || in_array('locality', $location_types)) {
-                        error_log('*** WARNING: Coordinates may be generic/default location ***');
-                    }
-                    
-                } else {
-                    error_log('Google API returned no results or error');
-                    error_log('Status: ' . $data['status']);
-                    if (isset($data['error_message'])) {
-                        error_log('Error: ' . $data['error_message']);
-                    }
-                }
-            } else {
-                error_log('WordPress HTTP error: ' . $response->get_error_message());
-            }
-            
-        } else {
-            error_log('No Google API key found in common WordPress options');
-        }
-        
-        error_log('=== END GOOGLE COORDINATES DEBUG ===');
-    }
-    
-    /**
-     * Debug shipping rates
-     */
-    public function debug_shipping_rates($rates, $package) {
-        error_log('=== SHIPPING RATES DEBUG ===');
-        error_log('Package destination: ' . print_r($package['destination'], true));
-        
-        foreach ($rates as $rate_id => $rate) {
-            error_log('Rate ID: ' . $rate_id);
-            error_log('Rate Label: ' . $rate->label);
-            error_log('Rate Cost: RM' . $rate->cost);
-            error_log('Rate Method ID: ' . $rate->method_id);
-            
-            // Check if this is the distance rate plugin
-            if (strpos($rate->method_id, 'distance_rate') !== false) {
-                error_log('*** DISTANCE RATE SHIPPING DETECTED ***');
-                error_log('Full rate object: ' . print_r($rate, true));
-                
-                // Check for RM11.80 specifically
-                if (abs(floatval($rate->cost) - 11.80) < 0.01) {
-                    error_log('*** ALERT: RM11.80 DETECTED - LIKELY GOOGLE DEFAULT LOCATION ***');
-                    error_log('Address: ' . (isset($package['destination']['address_1']) ? $package['destination']['address_1'] : 'Unknown'));
-                    
-                    // Try to get coordinates if available in the rate meta
-                    if (isset($rate->meta_data)) {
-                        error_log('Rate meta data: ' . print_r($rate->meta_data, true));
-                    }
-                }
-            }
-        }
-        
-        error_log('=== END SHIPPING RATES DEBUG ===');
-        
-        return $rates;
     }
     
     public function reorder_checkout_fields($fields) {
@@ -359,8 +202,6 @@ class SSFood4U_Working_Delivery_Validator {
         
         <script>
         jQuery(document).ready(function($) {
-            console.log('Working validator with delivery validation loading...');
-            
             var hotelTranslations = <?php echo json_encode($hotel_translations); ?>;
             var validationNonce = '<?php echo $nonce; ?>';
             
@@ -411,25 +252,14 @@ class SSFood4U_Working_Delivery_Validator {
                             break;
                         }
                     }
-                    
-                    if (inserted) {
-                        console.log('Working interface created with validation integration');
-                    }
                 },
                 
                 bindEvents: function() {
                     var self = this;
-                    console.log('=== BINDING EVENTS ===');
-                    
-                    // Test if jQuery events work at all
-                    $(document).on('click', '#working-chinese-input', function() {
-                        console.log('Chinese field clicked - events are working');
-                    });
                     
                     // Chinese input handling
                     $(document).on('input', '#working-chinese-input', function() {
                         var chineseText = $(this).val().trim();
-                        console.log('Chinese input event fired:', chineseText);
                         
                         if (chineseText) {
                             self.translateChinese(chineseText);
@@ -440,52 +270,25 @@ class SSFood4U_Working_Delivery_Validator {
                         }
                     });
                     
-                    // English input handling with extensive debugging
-                    $(document).on('click', '#working-english-output', function() {
-                        console.log('English field clicked - events are working');
-                    });
-                    
+                    // English input handling
                     $(document).on('input', '#working-english-output', function() {
-                        console.log('=== ENGLISH INPUT EVENT FIRED ===');
                         var englishText = $(this).val().trim();
-                        console.log('English text value:', englishText);
                         
                         if (englishText) {
-                            console.log('Processing English input:', englishText);
-                            
-                            // Update address field
                             $('#billing_address_1').val(englishText);
-                            console.log('Updated address field to:', englishText);
-                            
-                            // Update status
                             $('#working-status').html('<span style="color: #007cba;">English input: ' + englishText + '</span>');
-                            console.log('Updated status display');
                             
-                            // Trigger delivery validation
-                            console.log('About to trigger delivery validation...');
                             setTimeout(function() {
-                                console.log('Calling triggerDeliveryValidation for:', englishText);
-                                self.triggerDeliveryValidation(englishText, false);
+                                self.triggerDeliveryValidation(englishText);
                             }, 300);
                             
-                            // Trigger other events
                             $('#billing_address_1').trigger('change');
                             $('body').trigger('update_checkout');
-                            console.log('Triggered other events');
                         } else {
-                            console.log('English field cleared');
                             $('#billing_address_1').val('');
                             $('#working-status').html('');
                         }
-                        console.log('=== END ENGLISH INPUT EVENT ===');
                     });
-                    
-                    // Also try keyup as backup
-                    $(document).on('keyup', '#working-english-output', function() {
-                        console.log('English field keyup event fired');
-                    });
-                    
-                    console.log('Events bound successfully');
                 },
                 
                 translateChinese: function(chinese) {
@@ -506,7 +309,6 @@ class SSFood4U_Working_Delivery_Validator {
                         $('#billing_address_1').val(englishResult);
                         $('#working-status').html('<span style="color: #28a745;">Translation successful: ' + englishResult + '</span>');
                         
-                        // Trigger delivery validation after translation
                         setTimeout(function() {
                             self.triggerDeliveryValidation(englishResult);
                         }, 300);
@@ -515,7 +317,6 @@ class SSFood4U_Working_Delivery_Validator {
                         $('#billing_address_1').val(chinese);
                         $('#working-status').html('<span style="color: #ffc107;">Hotel not found - using original text</span>');
                         
-                        // Still validate the original Chinese text
                         setTimeout(function() {
                             self.triggerDeliveryValidation(chinese);
                         }, 300);
@@ -528,7 +329,6 @@ class SSFood4U_Working_Delivery_Validator {
                 initDeliveryValidation: function() {
                     var self = this;
                     
-                    // Hook into direct address field changes
                     $(document).off('change.deliveryValidation', '#billing_address_1')
                                .on('change.deliveryValidation', '#billing_address_1', function() {
                         var addressValue = $(this).val();
@@ -536,19 +336,15 @@ class SSFood4U_Working_Delivery_Validator {
                             self.triggerDeliveryValidation(addressValue);
                         }
                     });
-                    
-                    console.log('Delivery validation hooks initialized');
                 },
                 
                 triggerDeliveryValidation: function(address) {
                     var self = this;
-                    console.log('Triggering delivery validation for:', address);
                     
                     if (!address || address.trim() === '') {
                         return;
                     }
                     
-                    // Call the AJAX validation function
                     $.ajax({
                         url: wc_checkout_params.ajax_url,
                         type: 'POST',
@@ -558,16 +354,12 @@ class SSFood4U_Working_Delivery_Validator {
                             nonce: validationNonce
                         },
                         success: function(response) {
-                            console.log('Delivery validation response:', response);
-                            
                             if (response.success) {
                                 var result = response.data;
                                 
-                                // Update status display
                                 var statusColor = result.valid ? '#28a745' : '#dc3545';
                                 var statusMessage = result.message;
                                 
-                                // Update the working status div
                                 var currentStatus = $('#working-status').html();
                                 var validationStatus = '<br><span style="color: ' + statusColor + ';">Delivery: ' + statusMessage + '</span>';
                                 
@@ -577,7 +369,6 @@ class SSFood4U_Working_Delivery_Validator {
                                     $('#working-status').html('<span style="color: ' + statusColor + ';">' + statusMessage + '</span>');
                                 }
                                 
-                                // If invalid, show error notice
                                 if (!result.valid) {
                                     $('.woocommerce-error, .woocommerce-message').remove();
                                     $('.woocommerce-notices-wrapper').first().html(
@@ -586,12 +377,10 @@ class SSFood4U_Working_Delivery_Validator {
                                 } else {
                                     $('.woocommerce-error').remove();
                                 }
-                            } else {
-                                console.error('Validation failed:', response.data);
                             }
                         },
                         error: function(xhr, status, error) {
-                            console.error('AJAX error:', error);
+                            // Silent error handling - no console spam
                         }
                     });
                 },
@@ -605,22 +394,9 @@ class SSFood4U_Working_Delivery_Validator {
             
             workingValidator.init();
             
-            // Make validator globally available for testing
-            window.workingValidator = workingValidator;
-            window.manualTriggerDeliveryValidation = function(address) {
-                var addr = address || $('#billing_address_1').val();
-                if (addr) {
-                    workingValidator.triggerDeliveryValidation(addr);
-                } else {
-                    console.log('No address provided for validation');
-                }
-            };
-            
             // Hide apartment field
             $('#billing_address_2_field').hide();
             $('#billing_address_2').val('');
-            
-            console.log('Enhanced validator with delivery validation loaded. Use window.manualTriggerDeliveryValidation() for testing.');
         });
         </script>
         <?php
@@ -636,10 +412,7 @@ class SSFood4U_Working_Delivery_Validator {
         );
         
         if (empty($address_lower) || strlen($address_lower) < 3) {
-            // Add debug logger call before return
-            if (class_exists('SSFood4U_Debug_Logger')) {
-                SSFood4U_Debug_Logger::get_instance()->log_delivery_validation($address, $result);
-            }
+            $this->debug('Validation skipped - address too short: ' . $address);
             return $result;
         }
         
@@ -658,10 +431,7 @@ class SSFood4U_Working_Delivery_Validator {
                 $result['valid'] = false;
                 $result['message'] = "Delivery not available to " . $area;
                 
-                // Add debug logger call before return
-                if (class_exists('SSFood4U_Debug_Logger')) {
-                    SSFood4U_Debug_Logger::get_instance()->log_delivery_validation($address, $result);
-                }
+                $this->debug('Invalid area detected: ' . $area . ' in address: ' . $address);
                 return $result;
             }
         }
@@ -670,19 +440,12 @@ class SSFood4U_Working_Delivery_Validator {
             if (strpos($address_lower, $area) !== false) {
                 $result['message'] = "Delivery available to " . $area;
                 
-                // Add debug logger call before return
-                if (class_exists('SSFood4U_Debug_Logger')) {
-                    SSFood4U_Debug_Logger::get_instance()->log_delivery_validation($address, $result);
-                }
+                $this->debug('Valid area detected: ' . $area . ' in address: ' . $address);
                 return $result;
             }
         }
         
-        // Add debug logger call before final return
-        if (class_exists('SSFood4U_Debug_Logger')) {
-            SSFood4U_Debug_Logger::get_instance()->log_delivery_validation($address, $result);
-        }
-        
+        $this->debug('Address validated as general delivery: ' . $address);
         return $result;
     }
     
