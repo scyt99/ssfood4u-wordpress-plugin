@@ -2,7 +2,7 @@
 /*
 Plugin Name: ssfood4u main
 Description: Adds QR code and Payment Verification with Enhanced OCR
-Version: 1.3
+Version: 1.4
 Author: Steven
 */
 
@@ -11,336 +11,197 @@ if (!defined('ABSPATH')) exit;
 // Define plugin constants
 define('SSFOOD4U_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('SSFOOD4U_PLUGIN_URL', plugin_dir_url(__FILE__));
-define('SSFOOD4U_PLUGIN_VERSION', '1.3');
+define('SSFOOD4U_PLUGIN_VERSION', '1.4');
 
 // Load all PHP modules from /includes
 foreach (glob(plugin_dir_path(__FILE__) . 'includes/*.php') as $file) {
     require_once $file;
 }
 
-// === LANDMARK DEBUG FUNCTIONALITY ===
-class SSFood4U_Landmark_Debug {
+// === SINGLE UNIFIED VALIDATION SYSTEM ===
+class SSFood4U_Unified_System {
     
-    public function __construct() {
-        add_action('wp_footer', array($this, 'debug_geocoding_results'));
+    private static $instance = null;
+    private $debug_logger = null;
+    
+    public static function get_instance() {
+        if (self::$instance === null) {
+            self::$instance = new self();
+        }
+        return self::$instance;
     }
     
-    // Debug geocoding results
-    public function debug_geocoding_results() {
+    private function __construct() {
+        // Initialize debug logger if available
+        if (class_exists('SSFood4U_Debug_Logger')) {
+            $this->debug_logger = SSFood4U_Debug_Logger::get_instance();
+        }
+        
+        add_action('wp_footer', array($this, 'render_unified_system'));
+    }
+    
+    private function debug($message) {
+        if ($this->debug_logger) {
+            $this->debug_logger->log($message);
+        }
+    }
+    
+    public function render_unified_system() {
         if (is_checkout()) {
             ?>
             <script>
             jQuery(document).ready(function($) {
-                console.log('🚀 SSFood4U Landmark Debug Active - OVERRIDE MODE');
-                
-                // Our validation state
-                let ourValidationActive = false;
-                let userIsTyping = false;
-                let validationInProgress = false;
-                
-                // Function to block delivery
-                function blockDelivery(reason) {
-                    console.log('🚫 BLOCKING DELIVERY:', reason);
-                    $('#place_order').prop('disabled', true);
-                    $('#place_order').text('Delivery Not Available');
-                    $('#delivery-warning').remove();
-                    $('.woocommerce-checkout-review-order').prepend(
-                        '<div id="delivery-warning" style="background: #ffebee; border: 1px solid #f44336; color: #d32f2f; padding: 15px; margin: 15px 0; border-radius: 4px; font-weight: bold;">' +
-                        'Delivery not available to this location' +
-                        '</div>'
-                    );
+                // Prevent multiple initializations
+                if (window.SSFood4U_Unified_Loaded) {
+                    return;
                 }
+                window.SSFood4U_Unified_Loaded = true;
                 
-                // Function to allow delivery
-                function allowDelivery(reason) {
-                    console.log('✅ ALLOWING DELIVERY:', reason);
+                // Global state management
+                let isTyping = false;
+                let validationTimeout = null;
+                let lastValidatedAddress = '';
+                
+                // Initialize payment verification flag
+                window.SSFood4U_PaymentVerified = window.location.href.includes('payment_uploaded=1');
+                
+                // === CORE FUNCTIONS ===
+                
+                function showRM1180Warning() {
+                    $('.ssfood4u-warning').remove();
                     
-                    // Only enable if payment verification is complete
-                    if (window.SSFood4U_PaymentVerified) {
-                        $('#place_order').prop('disabled', false);
-                        $('#place_order').text('Place Order');
-                    } else {
-                        $('#place_order').prop('disabled', true);
-                        $('#place_order').text('Upload Payment Receipt First');
+                    const warning = $('<div class="ssfood4u-warning" style="' +
+                        'background: #ffebee; border: 2px solid #f44336; color: #d32f2f; ' +
+                        'padding: 15px; margin: 15px 0; border-radius: 4px; font-weight: bold; ' +
+                        'text-align: center; font-size: 14px;">' +
+                        '⚠️ Sorry, currently we do not provide delivery to this location yet.' +
+                        '</div>');
+                    
+                    if ($('.woocommerce-checkout-review-order').length) {
+                        $('.woocommerce-checkout-review-order').prepend(warning);
+                    } else if ($('#order_review').length) {
+                        $('#order_review').prepend(warning);
                     }
                     
-                    $('#delivery-warning').remove();
+                    // Disable place order
+                    $('#place_order').prop('disabled', true).css({
+                        'opacity': '0.5',
+                        'background-color': '#ccc'
+                    });
                 }
                 
-                // OVERRIDE: Block all external geocoding attempts
-                function blockExternalGeocoding() {
-                    // Override AJAX success globally but only for geocoding
-                    $(document).off('ajaxSuccess.externalGeocode').on('ajaxSuccess.externalGeocode', function(event, xhr, settings) {
-                        if (userIsTyping || validationInProgress) {
-                            if (settings.url && (settings.url.includes('googleapis.com') ||
-                                settings.url.includes('geocod') ||
-                                settings.url.includes('maps') ||
-                                settings.url.includes('kikote'))) {
-                                console.log('🚫 BLOCKED EXTERNAL GEOCODING while user typing');
-                                event.stopImmediatePropagation();
+                function hideRM1180Warning() {
+                    $('.ssfood4u-warning').remove();
+                    
+                    // Re-enable place order only if payment is verified
+                    if (window.SSFood4U_PaymentVerified) {
+                        $('#place_order').prop('disabled', false).css({
+                            'opacity': '1',
+                            'background-color': ''
+                        });
+                    }
+                }
+                
+                function checkForRM1180() {
+                    let found = false;
+                    
+                    // Check shipping cost elements
+                    const selectors = [
+                        '.shipping .woocommerce-Price-amount',
+                        '.cart-subtotal + tr .woocommerce-Price-amount',
+                        'tr.shipping .amount'
+                    ];
+                    
+                    for (let selector of selectors) {
+                        $(selector).each(function() {
+                            const text = $(this).text().trim();
+                            const cost = parseFloat(text.replace(/[^\d.]/g, ''));
+                            if (cost === 11.8 || cost === 11.80) {
+                                found = true;
                                 return false;
                             }
-                        }
-                    });
-                }
-                
-                // Our isolated validation
-                function performOurValidation(address) {
-                    if (userIsTyping || validationInProgress) {
-                        console.log('🚫 VALIDATION CANCELLED - User typing or validation in progress');
-                        return;
-                    }
-                    
-                    validationInProgress = true;
-                    console.log('🔍 STARTING OUR VALIDATION for:', address);
-                    
-                    var enhancedAddress = address + ', Semporna, Sabah, Malaysia';
-                    
-                    if (typeof google !== 'undefined' && google.maps && google.maps.Geocoder) {
-                        var ourGeocoder = new google.maps.Geocoder();
-                        
-                        ourGeocoder.geocode({'address': enhancedAddress}, function(results, status) {
-                            if (userIsTyping) {
-                                console.log('🚫 VALIDATION CANCELLED - User started typing during geocoding');
-                                validationInProgress = false;
-                                return;
-                            }
-                            
-                            if (status === 'OK' && results[0]) {
-                                var lat = results[0].geometry.location.lat();
-                                var lng = results[0].geometry.location.lng();
-                                console.log('🔍 OUR COORDINATES:', lat, lng);
-                                
-                                if (Math.abs(lat - 4.479391) < 0.001 && Math.abs(lng - 118.611545) < 0.001) {
-                                    console.log('🚫 FALLBACK COORDINATES DETECTED');
-                                    blockDelivery('Fallback coordinates detected');
-                                    validationInProgress = false;
-                                    return;
-                                }
-                            }
-                            
-                            // Check shipping cost
-                            checkShippingCost(address);
                         });
-                    } else {
-                        checkShippingCost(address);
+                        if (found) break;
                     }
-                }
-                
-function showDeliveryWarning() {
-    // Remove any existing warnings first
-    $('#delivery-warning, #ssfood4u-delivery-warning').remove();
-    
-    // Create and show the warning message
-    var warningHTML = '<div id="ssfood4u-delivery-warning" style="' +
-        'background: #ffebee; ' +
-        'border: 2px solid #f44336; ' +
-        'color: #d32f2f; ' +
-        'padding: 15px; ' +
-        'margin: 15px 0; ' +
-        'border-radius: 4px; ' +
-        'font-weight: bold; ' +
-        'font-size: 14px; ' +
-        'text-align: center; ' +
-        'box-shadow: 0 2px 4px rgba(0,0,0,0.1); ' +
-        'animation: slideDown 0.3s ease-out;' +
-        '">' +
-        '⚠️ Sorry, currently we do not provide delivery to this location yet.' +
-        '</div>';
-    
-    // Add to multiple possible locations to ensure visibility
-    if ($('.woocommerce-checkout-review-order').length > 0) {
-        $('.woocommerce-checkout-review-order').prepend(warningHTML);
-    } else if ($('#order_review').length > 0) {
-        $('#order_review').prepend(warningHTML);
-    } else if ($('.checkout').length > 0) {
-        $('.checkout').prepend(warningHTML);
-    }
-    
-    console.log('📢 DELIVERY WARNING DISPLAYED');
-}
-
-function hideDeliveryWarning() {
-    $('#delivery-warning, #ssfood4u-delivery-warning').remove();
-    console.log('✅ Delivery warning hidden');
-}
-
-function blockDelivery(reason) {
-    console.log('🚫 BLOCKING DELIVERY:', reason);
-    
-    // Disable place order button
-    $('#place_order').prop('disabled', true).addClass('disabled');
-    
-    // Add CSS to make it visually disabled
-    $('#place_order').css({
-        'opacity': '0.5',
-        'cursor': 'not-allowed',
-        'background-color': '#ccc'
-    });
-}
-
-function showDeliveryWarning() {
-    // Remove any existing warnings first
-    $('#delivery-warning, #ssfood4u-delivery-warning').remove();
-    
-    // Create and show the warning message
-    var warningHTML = '<div id="ssfood4u-delivery-warning" style="' +
-        'background: #ffebee; ' +
-        'border: 2px solid #f44336; ' +
-        'color: #d32f2f; ' +
-        'padding: 15px; ' +
-        'margin: 15px 0; ' +
-        'border-radius: 4px; ' +
-        'font-weight: bold; ' +
-        'font-size: 14px; ' +
-        'text-align: center; ' +
-        'box-shadow: 0 2px 4px rgba(0,0,0,0.1); ' +
-        'animation: slideDown 0.3s ease-out;' +
-        '">' +
-        '⚠️ Sorry, currently we do not provide delivery to this location yet.' +
-        '</div>';
-    
-    // Add to multiple possible locations to ensure visibility
-    if ($('.woocommerce-checkout-review-order').length > 0) {
-        $('.woocommerce-checkout-review-order').prepend(warningHTML);
-    } else if ($('#order_review').length > 0) {
-        $('#order_review').prepend(warningHTML);
-    } else if ($('.checkout').length > 0) {
-        $('.checkout').prepend(warningHTML);
-    }
-    
-    console.log('📢 DELIVERY WARNING DISPLAYED');
-}
-
-function hideDeliveryWarning() {
-    $('#delivery-warning, #ssfood4u-delivery-warning').remove();
-    console.log('✅ Delivery warning hidden');
-}
-
-function blockDelivery(reason) {
-    console.log('🚫 BLOCKING DELIVERY:', reason);
-    
-    // Disable place order button
-    $('#place_order').prop('disabled', true).addClass('disabled');
-    
-    // Add CSS to make it visually disabled
-    $('#place_order').css({
-        'opacity': '0.5',
-        'cursor': 'not-allowed',
-        'background-color': '#ccc'
-    });
-}
-
-function allowDelivery(reason) {
-    console.log('✅ ALLOWING DELIVERY:', reason);
-    
-    // Re-enable place order button
-    $('#place_order').prop('disabled', false).removeClass('disabled');
-    
-    // Restore normal styling
-    $('#place_order').css({
-        'opacity': '1',
-        'cursor': 'pointer',
-        'background-color': ''
-    });
-}
-                
-                function allowDelivery(reason) {
-    console.log('✅ ALLOWING DELIVERY:', reason);
-    
-    // Re-enable place order button
-    $('#place_order').prop('disabled', false).removeClass('disabled');
-    
-    // Restore normal styling
-    $('#place_order').css({
-        'opacity': '1',
-        'cursor': 'pointer',
-        'background-color': ''
-    });
-}
-                
-                // COMPLETELY override the address field behavior
-                function setupOverrideHandlers() {
-                    var addressField = $('#billing_address_1');
                     
-                    // Remove ALL existing event handlers from other plugins
-                    addressField.off();
-                    
-                    // Add our controlled handlers
-                    addressField.on('focus.ourplugin', function() {
-                        userIsTyping = true;
-                        ourValidationActive = false;
-                        validationInProgress = false;
-                        console.log('✏️ USER EDITING - All validation disabled');
-                        
-                        // Clear warnings
-                        $('#delivery-warning').remove();
-                        
-                        // Only enable if payment is verified
-                        if (window.SSFood4U_PaymentVerified) {
-                            $('#place_order').prop('disabled', false);
-                            $('#place_order').text('Place Order');
-                        }
-                    });
-                    
-                    addressField.on('input.ourplugin keydown.ourplugin keyup.ourplugin paste.ourplugin', function(e) {
-                        userIsTyping = true;
-                        ourValidationActive = false;
-                        validationInProgress = false;
-                        console.log('⌨️ USER TYPING (' + e.type + ') - Validation blocked');
-                    });
-                    
-                    addressField.on('blur.ourplugin', function() {
-                        var address = $(this).val().trim();
-                        console.log('👆 USER CLICKED AWAY');
-                        
-                        if (address.length < 3) {
-                            console.log('⚠️ Address too short');
-                            userIsTyping = false;
-                            return;
-                        }
-                        
-                        // Wait to ensure user is really done
-                        setTimeout(function() {
-                            if (!userIsTyping && !validationInProgress) {
-                                userIsTyping = false; // Officially not typing anymore
-                                ourValidationActive = true;
-                                console.log('✅ STARTING VALIDATION after blur delay');
-                                performOurValidation(address);
-                            } else {
-                                console.log('🚫 VALIDATION CANCELLED - Still typing or in progress');
+                    // Content scan as backup
+                    if (!found) {
+                        $('.woocommerce-checkout-review-order *').each(function() {
+                            if ($(this).text().includes('11.80')) {
+                                found = true;
+                                return false;
                             }
-                        }, 1500);
+                        });
+                    }
+                    
+                    return found;
+                }
+                
+                function performValidation(address) {
+                    if (!address || address.length < 3) return;
+                    
+                    // Prevent duplicate validations
+                    if (address === lastValidatedAddress) return;
+                    lastValidatedAddress = address;
+                    
+                    // Wait for shipping calculation, then check
+                    setTimeout(function() {
+                        if (checkForRM1180()) {
+                            showRM1180Warning();
+                        } else {
+                            hideRM1180Warning();
+                        }
+                    }, 3000);
+                }
+                
+                // === EVENT HANDLING ===
+                
+                function bindAddressEvents() {
+                    // Remove any existing bindings to prevent duplicates
+                    $('#billing_address_1').off('.ssfood4u');
+                    
+                    $('#billing_address_1').on('input.ssfood4u', function() {
+                        isTyping = true;
+                        hideRM1180Warning(); // Hide warning immediately when typing
+                        
+                        // Clear existing timeout
+                        if (validationTimeout) {
+                            clearTimeout(validationTimeout);
+                        }
+                        
+                        // Set new timeout
+                        validationTimeout = setTimeout(function() {
+                            isTyping = false;
+                            performValidation($('#billing_address_1').val().trim());
+                        }, 2000); // Wait 2 seconds after typing stops
+                    });
+                    
+                    // Also bind to checkout updates
+                    $(document.body).off('updated_checkout.ssfood4u').on('updated_checkout.ssfood4u', function() {
+                        if (!isTyping) {
+                            const address = $('#billing_address_1').val().trim();
+                            if (address.length > 3) {
+                                setTimeout(function() {
+                                    performValidation(address);
+                                }, 1000);
+                            }
+                        }
                     });
                 }
                 
-                // Initialize our override system
-                function initializeOverride() {
-                    blockExternalGeocoding();
-                    setupOverrideHandlers();
-                    
-                    // Re-apply our overrides every few seconds to counter other plugins
-                    setInterval(function() {
-                        if (!userIsTyping && !validationInProgress) {
-                            setupOverrideHandlers();
-                        }
-                    }, 5000);
-                }
+                // === INITIALIZATION ===
                 
-                // Wait for page to fully load, then initialize
+                // Wait for page to fully load
                 setTimeout(function() {
-                    initializeOverride();
-                    console.log('🛡️ OVERRIDE SYSTEM ACTIVATED');
-                }, 2000);
+                    bindAddressEvents();
+                }, 1000);
                 
-                // Global flag for payment verification status
-                window.SSFood4U_PaymentVerified = false;
-                
-                // Check if payment was uploaded (from URL parameter or session)
-                if (window.location.href.includes('payment_uploaded=1')) {
-                    window.SSFood4U_PaymentVerified = true;
-                    console.log('💳 Payment verification detected from URL');
-                }
+                // Re-bind events periodically to counter other plugins
+                setInterval(function() {
+                    if (!isTyping) {
+                        bindAddressEvents();
+                    }
+                }, 10000); // Every 10 seconds
             });
             </script>
             <?php
@@ -361,7 +222,6 @@ function ssfood4u_process_enhanced_ocr_validation($payment_data, $receipt_file_p
     
     // Check if enhanced OCR validator exists
     if (!class_exists('SSFood4U_Enhanced_OCR_Validator')) {
-        error_log('Enhanced OCR Validator class not found');
         return $payment_data;
     }
     
@@ -382,47 +242,9 @@ function ssfood4u_process_enhanced_ocr_validation($payment_data, $receipt_file_p
     // Auto-approve high-confidence matches
     $auto_approve_threshold = get_option('ssfood4u_ocr_auto_approve', 85);
     if ($auto_approve_threshold > 0 && $ocr_result['confidence'] >= $auto_approve_threshold) {
-        $payment_data['verification_status'] = 'verified'; // Auto-approved
+        $payment_data['verification_status'] = 'verified';
         $payment_data['auto_approved_by_ocr'] = true;
-        
-        // Log auto-approval
-        error_log("OCR Auto-approved payment: Order {$payment_data['order_id']} with {$ocr_result['confidence']}% confidence");
-        
-        // Notify admin of auto-approval
-        $admin_email = get_option('admin_email');
-        $subject = 'Payment Auto-Approved by OCR - ' . get_bloginfo('name');
-        $message = "Payment automatically approved by enhanced OCR system:\n\n";
-        $message .= "Order ID: {$payment_data['order_id']}\n";
-        $message .= "Amount: RM {$expected_amount}\n";
-        $message .= "Confidence: {$ocr_result['confidence']}%\n";
-        $message .= "Validation: {$ocr_result['validation']}\n";
-        $message .= "Customer: {$payment_data['customer_email']}\n";
-        $message .= "Time: " . date('Y-m-d H:i:s') . "\n\n";
-        
-        if (isset($ocr_result['matched_amount'])) {
-            $message .= "Matched Amount: RM {$ocr_result['matched_amount']}\n";
-        }
-        
-        if (isset($ocr_result['receipt_metadata']['receipt_type'])) {
-            $message .= "Receipt Type: {$ocr_result['receipt_metadata']['receipt_type']}\n";
-        }
-        
-        $message .= "\nReview in admin panel: " . admin_url('admin.php?page=ssfood4u-payments');
-        
-        wp_mail($admin_email, $subject, $message);
     }
-    
-    // Detailed logging for analysis
-    error_log('Enhanced OCR Processing: ' . json_encode(array(
-        'order_id' => $payment_data['order_id'],
-        'validation_status' => $ocr_result['validation'],
-        'confidence_score' => $ocr_result['confidence'],
-        'auto_approved' => $payment_data['auto_approved_by_ocr'] ?? false,
-        'amounts_detected' => $ocr_result['amounts_found'] ?? array(),
-        'expected_amount' => $expected_amount,
-        'transaction_match' => $ocr_result['transaction_match'] ?? null,
-        'receipt_type' => $ocr_result['receipt_metadata']['receipt_type'] ?? 'unknown'
-    )));
     
     return $payment_data;
 }
@@ -430,40 +252,20 @@ function ssfood4u_process_enhanced_ocr_validation($payment_data, $receipt_file_p
 // Initialize enhanced OCR system
 add_action('init', 'ssfood4u_integrate_enhanced_ocr_validation');
 
-// Initialize the debug functionality
-new SSFood4U_Landmark_Debug();
+// Initialize ONLY the unified system
+SSFood4U_Unified_System::get_instance();
 
-// Initialize debug logger for delivery validation and shipping
-if (class_exists('SSFood4U_Debug_Logger')) {
-    SSFood4U_Debug_Logger::get_instance();
-    error_log('SSFood4U: Debug logger initialized for coordinate and shipping tracking');
-} else {
-    error_log('SSFood4U_Debug_Logger class not found - coordinate debugging unavailable');
-}
-
-// Initialize payment verification system
+// Initialize other systems ONLY if they exist and are needed
 if (class_exists('SSFood4U_Payment_Verification')) {
     new SSFood4U_Payment_Verification();
 }
 
-// Initialize delivery validator
-if (class_exists('SSFood4U_Simple_Delivery_Validator')) {
-    new SSFood4U_Simple_Delivery_Validator();
-}
-
-// Initialize working delivery validator (updated name)
-if (class_exists('SSFood4U_Working_Delivery_Validator')) {
-    new SSFood4U_Working_Delivery_Validator();
-}
-
-// Initialize enhanced OCR validator
 if (class_exists('SSFood4U_Enhanced_OCR_Validator')) {
     new SSFood4U_Enhanced_OCR_Validator();
 }
 
 // === ADMIN MENU SETUP ===
 add_action('admin_menu', function() {
-    // Create main menu
     add_menu_page(
         'SSFood4U Settings',
         'SSFood4U',
@@ -474,7 +276,6 @@ add_action('admin_menu', function() {
         30
     );
     
-    // Add hotel database submenu
     if (class_exists('SSFood4U_Hotel_Translation_DB')) {
         global $ssfood4u_hotel_db;
         add_submenu_page(
@@ -487,7 +288,6 @@ add_action('admin_menu', function() {
         );
     }
     
-    // Add payment verification submenu (if exists)
     if (class_exists('SSFood4U_Admin_Panel')) {
         add_submenu_page(
             'ssfood4u-main',
@@ -499,7 +299,6 @@ add_action('admin_menu', function() {
         );
     }
     
-    // Add general settings submenu
     add_submenu_page(
         'ssfood4u-main',
         'General Settings',
@@ -522,7 +321,7 @@ function ssfood4u_main_admin_page() {
     <div class="wrap">
         <h1>SSFood4U Management System</h1>
         
-        <div class="card" style="max-width: none;">
+        <div class="card">
             <h2>System Overview</h2>
             <table class="form-table">
                 <tr>
@@ -534,8 +333,8 @@ function ssfood4u_main_admin_page() {
                     <td><?php echo $hotel_count; ?> hotels loaded</td>
                 </tr>
                 <tr>
-                    <th scope="row">Delivery Validation</th>
-                    <td><span style="color: green;">Active</span> - Mandarin translation enabled</td>
+                    <th scope="row">Unified Validation</th>
+                    <td><span style="color: green;">Active</span> - Single system approach</td>
                 </tr>
                 <tr>
                     <th scope="row">Payment Verification</th>
@@ -545,32 +344,23 @@ function ssfood4u_main_admin_page() {
                     <th scope="row">Debug Logging</th>
                     <td>
                         <?php if (class_exists('SSFood4U_Debug_Logger')): ?>
-                            <span style="color: green;">Active</span> - Coordinate and shipping tracking enabled
+                            <span style="color: green;">Available</span> - 
+                            <a href="<?php echo admin_url('admin.php?page=ssfood4u-debug'); ?>">Debug Controls</a>
                         <?php else: ?>
-                            <span style="color: orange;">Inactive</span> - Debug logger not loaded
+                            <span style="color: orange;">Inactive</span>
                         <?php endif; ?>
                     </td>
                 </tr>
             </table>
         </div>
         
-        <div class="card" style="max-width: none;">
+        <div class="card">
             <h2>Quick Actions</h2>
             <p>
                 <a href="<?php echo admin_url('admin.php?page=ssfood4u-hotels'); ?>" class="button button-primary">Manage Hotels</a>
                 <a href="<?php echo admin_url('admin.php?page=ssfood4u-payments'); ?>" class="button">View Payments</a>
                 <a href="<?php echo admin_url('admin.php?page=ssfood4u-settings'); ?>" class="button">Settings</a>
             </p>
-        </div>
-        
-        <div class="card" style="max-width: none;">
-            <h2>Recent Activity</h2>
-            <p>Check your WordPress debug log for translation and validation activity.</p>
-            <p><strong>Debug Log Location:</strong> <code>/wp-content/debug.log</code></p>
-            <?php if (class_exists('SSFood4U_Debug_Logger')): ?>
-                <p><strong>Coordinate Debug:</strong> Address validation and Google Maps coordinate lookups are being logged.</p>
-                <p><strong>Shipping Debug:</strong> WooCommerce shipping rate calculations are being tracked for RM11.80 detection.</p>
-            <?php endif; ?>
         </div>
     </div>
     <?php
@@ -579,7 +369,6 @@ function ssfood4u_main_admin_page() {
 // Settings admin page
 function ssfood4u_settings_admin_page() {
     if (isset($_POST['submit'])) {
-        // Handle settings save
         update_option('ssfood4u_bank_name', sanitize_text_field($_POST['bank_name']));
         update_option('ssfood4u_account_number', sanitize_text_field($_POST['account_number']));
         update_option('ssfood4u_account_holder', sanitize_text_field($_POST['account_holder']));
@@ -600,7 +389,7 @@ function ssfood4u_settings_admin_page() {
         <form method="post" action="">
             <?php wp_nonce_field('ssfood4u_settings', 'ssfood4u_settings_nonce'); ?>
             
-            <div class="card" style="max-width: none;">
+            <div class="card">
                 <h2>Payment Information</h2>
                 <table class="form-table">
                     <tr>
@@ -618,7 +407,7 @@ function ssfood4u_settings_admin_page() {
                 </table>
             </div>
             
-            <div class="card" style="max-width: none;">
+            <div class="card">
                 <h2>Contact Information</h2>
                 <table class="form-table">
                     <tr>
@@ -639,53 +428,8 @@ function ssfood4u_settings_admin_page() {
     <?php
 }
 
-// Add admin notice for setup completion
-add_action('admin_notices', function() {
-    $screen = get_current_screen();
-    if ($screen && strpos($screen->id, 'ssfood4u') !== false) {
-        $ocr_key = get_option('ssfood4u_ocr_api_key', '');
-        if (empty($ocr_key)) {
-            echo '<div class="notice notice-info is-dismissible">';
-            echo '<p><strong>Enhanced OCR System Ready:</strong> ';
-            echo '<a href="' . admin_url('admin.php?page=ssfood4u-settings') . '">Configure your OCR.space API key</a> to enable automatic receipt validation.';
-            echo '</p></div>';
-        }
-    }
-});
-
-// Add OCR performance logging function
-function ssfood4u_log_ocr_performance($order_id, $expected, $found, $confidence, $status) {
-    $log_data = array(
-        'timestamp' => current_time('mysql'),
-        'order_id' => $order_id,
-        'expected_amount' => $expected,
-        'amounts_found' => $found,
-        'confidence' => $confidence,
-        'status' => $status,
-        'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? 'unknown'
-    );
-    
-    // Log to WordPress debug log
-    error_log('OCR Performance: ' . json_encode($log_data));
-    
-    // Store performance data for future analysis
-    $performance_logs = get_option('ssfood4u_ocr_performance', array());
-    $performance_logs[] = $log_data;
-    
-    // Keep only last 100 entries
-    if (count($performance_logs) > 100) {
-        $performance_logs = array_slice($performance_logs, -100);
-    }
-    
-    update_option('ssfood4u_ocr_performance', $performance_logs);
-}
-
 // Initialize admin panel if class exists
 if (class_exists('SSFood4U_Admin_Panel')) {
-    error_log('SSFood4U: Creating real admin panel instance...');
     $admin_panel = new SSFood4U_Admin_Panel();
-    error_log('SSFood4U: Real admin panel created successfully');
-} else {
-    error_log('SSFood4U_Admin_Panel class not found');
 }
 ?>
