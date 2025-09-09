@@ -127,41 +127,137 @@ class SSFood4U_Landmark_Debug {
                     }
                 }
                 
-                function checkShippingCost(address) {
-                    if (userIsTyping) {
-                        console.log('🚫 SHIPPING CHECK CANCELLED - User typing');
-                        validationInProgress = false;
-                        return;
-                    }
-                    
-                    setTimeout(function() {
-                        if (userIsTyping) {
-                            console.log('🚫 SHIPPING CHECK CANCELLED - User typing during wait');
-                            validationInProgress = false;
-                            return;
-                        }
-                        
-                        var shippingText = $('.shipping .woocommerce-Price-amount').text();
-                        if (!shippingText) {
-                            console.log('⚠️ No shipping cost found');
-                            validationInProgress = false;
-                            return;
-                        }
-                        
-                        var shippingCost = parseFloat(shippingText.replace('RM', '').replace(',', ''));
-                        console.log('💰 SHIPPING COST:', shippingCost);
-                        
-                        if (shippingCost === 11.8 || shippingCost === 11.80) {
-                            blockDelivery('Fallback shipping rate RM11.80');
-                        } else if (shippingCost > 0 && shippingCost < 11.8) {
-                            allowDelivery('Valid shipping rate: RM' + shippingCost);
-                        } else if (shippingCost > 11.8) {
-                            allowDelivery('High shipping rate: RM' + shippingCost);
-                        }
-                        
-                        validationInProgress = false;
-                    }, 3000);
-                }
+function showDeliveryWarning() {
+    // Remove any existing warnings first
+    $('#delivery-warning, #ssfood4u-delivery-warning').remove();
+    
+    // Create and show the warning message
+    var warningHTML = '<div id="ssfood4u-delivery-warning" style="' +
+        'background: #ffebee; ' +
+        'border: 2px solid #f44336; ' +
+        'color: #d32f2f; ' +
+        'padding: 15px; ' +
+        'margin: 15px 0; ' +
+        'border-radius: 4px; ' +
+        'font-weight: bold; ' +
+        'font-size: 14px; ' +
+        'text-align: center; ' +
+        'box-shadow: 0 2px 4px rgba(0,0,0,0.1); ' +
+        'animation: slideDown 0.3s ease-out;' +
+        '">' +
+        '⚠️ Sorry, currently we do not provide delivery to this location yet.' +
+        '</div>';
+    
+    // Add to multiple possible locations to ensure visibility
+    if ($('.woocommerce-checkout-review-order').length > 0) {
+        $('.woocommerce-checkout-review-order').prepend(warningHTML);
+    } else if ($('#order_review').length > 0) {
+        $('#order_review').prepend(warningHTML);
+    } else if ($('.checkout').length > 0) {
+        $('.checkout').prepend(warningHTML);
+    }
+    
+    console.log('📢 DELIVERY WARNING DISPLAYED');
+}
+
+function hideDeliveryWarning() {
+    $('#delivery-warning, #ssfood4u-delivery-warning').remove();
+    console.log('✅ Delivery warning hidden');
+}
+
+function blockDelivery(reason) {
+    console.log('🚫 BLOCKING DELIVERY:', reason);
+    
+    // Disable place order button
+    $('#place_order').prop('disabled', true).addClass('disabled');
+    
+    // Add CSS to make it visually disabled
+    $('#place_order').css({
+        'opacity': '0.5',
+        'cursor': 'not-allowed',
+        'background-color': '#ccc'
+    });
+}
+
+function showDeliveryWarning() {
+    // Remove any existing warnings first
+    $('#delivery-warning, #ssfood4u-delivery-warning').remove();
+    
+    // Create and show the warning message
+    var warningHTML = '<div id="ssfood4u-delivery-warning" style="' +
+        'background: #ffebee; ' +
+        'border: 2px solid #f44336; ' +
+        'color: #d32f2f; ' +
+        'padding: 15px; ' +
+        'margin: 15px 0; ' +
+        'border-radius: 4px; ' +
+        'font-weight: bold; ' +
+        'font-size: 14px; ' +
+        'text-align: center; ' +
+        'box-shadow: 0 2px 4px rgba(0,0,0,0.1); ' +
+        'animation: slideDown 0.3s ease-out;' +
+        '">' +
+        '⚠️ Sorry, currently we do not provide delivery to this location yet.' +
+        '</div>';
+    
+    // Add to multiple possible locations to ensure visibility
+    if ($('.woocommerce-checkout-review-order').length > 0) {
+        $('.woocommerce-checkout-review-order').prepend(warningHTML);
+    } else if ($('#order_review').length > 0) {
+        $('#order_review').prepend(warningHTML);
+    } else if ($('.checkout').length > 0) {
+        $('.checkout').prepend(warningHTML);
+    }
+    
+    console.log('📢 DELIVERY WARNING DISPLAYED');
+}
+
+function hideDeliveryWarning() {
+    $('#delivery-warning, #ssfood4u-delivery-warning').remove();
+    console.log('✅ Delivery warning hidden');
+}
+
+function blockDelivery(reason) {
+    console.log('🚫 BLOCKING DELIVERY:', reason);
+    
+    // Disable place order button
+    $('#place_order').prop('disabled', true).addClass('disabled');
+    
+    // Add CSS to make it visually disabled
+    $('#place_order').css({
+        'opacity': '0.5',
+        'cursor': 'not-allowed',
+        'background-color': '#ccc'
+    });
+}
+
+function allowDelivery(reason) {
+    console.log('✅ ALLOWING DELIVERY:', reason);
+    
+    // Re-enable place order button
+    $('#place_order').prop('disabled', false).removeClass('disabled');
+    
+    // Restore normal styling
+    $('#place_order').css({
+        'opacity': '1',
+        'cursor': 'pointer',
+        'background-color': ''
+    });
+}
+                
+                function allowDelivery(reason) {
+    console.log('✅ ALLOWING DELIVERY:', reason);
+    
+    // Re-enable place order button
+    $('#place_order').prop('disabled', false).removeClass('disabled');
+    
+    // Restore normal styling
+    $('#place_order').css({
+        'opacity': '1',
+        'cursor': 'pointer',
+        'background-color': ''
+    });
+}
                 
                 // COMPLETELY override the address field behavior
                 function setupOverrideHandlers() {
